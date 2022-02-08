@@ -1,0 +1,107 @@
+---
+title: "2/7/22 Project"
+author: "Becky Cloud"
+date: "2/7/2022"
+output: html_document
+---
+
+#Set working directory and import data
+```{r}
+setwd("C:/RData")
+
+dataset<-read.csv("C:/RData/Cleaned Prevalence Data V2.csv")
+dataset
+
+controls = read.csv("C:/RData/Becky_controls.csv")
+controls
+
+library("ggplot2")
+library("tidyverse")
+library("bbmle")
+```
+
+#Predictions
+```{r}
+prev_all = function(t=1, sigma_0, epsilon_0, P0, N_S, N_M, N_L, D_S, D_M, D_L, I_S, I_M, I_L) {
+  prev_S = 1- exp(-sigma_0*(epsilon_0/(epsilon_0*N_S+epsilon_0*N_M+epsilon_0*N_L))*P0*(1-exp(-t*(epsilon_0*N_S+epsilon_0*N_M+epsilon_0*N_L))))
+  prev_M = 1- exp(-sigma_0*(epsilon_0/(epsilon_0*N_S+epsilon_0*N_M+epsilon_0*N_L))*P0*(1-exp(-t*(epsilon_0*N_S+epsilon_0*N_M+epsilon_0*N_L))))
+  prev_L = 1- exp(-sigma_0*(epsilon_0/(epsilon_0*N_S+epsilon_0*N_M+epsilon_0*N_L))*P0*(1-exp(-t*(epsilon_0*N_S+epsilon_0*N_M+epsilon_0*N_L))))
+  c(prev_S, prev_M, prev_L)
+
+}
+
+prev_all(sigma_0 = .2, epsilon_0 = 10, P0 = 0, N_S = 6, N_M = 6, N_L = 6, D_S = 0, D_M = 0, D_L = 0)
+```
+
+#Negative Log Likelihoods (NLLS)
+```{r}
+NLL_rep = function(t=1, sigma_0, epsilon_0, P0, N_S, N_M, N_L, D_S, D_M, D_L, I_S, I_M, I_L) {
+  #transformations
+  #sigma_0 = 1/(1+exp(-sigma_0))
+  #epsilon_0 = exp(epsilon_0)
+  epsilon_S = epsilon_0
+  epsilon_M = epsilon_0
+  epsilon_L = epsilon_0
+  
+  sigma_S = sigma_0
+  sigma_M = sigma_0
+  sigma_L = sigma_0
+
+  prev_S = 1- exp(-sigma_S*(epsilon_0/(epsilon_S*N_S+epsilon_M*N_M+epsilon_L*N_L))*P0*(1-exp(-t*(epsilon_S*N_S+epsilon_M*N_M+epsilon_L*N_L))))
+  prev_M = 1- exp(-sigma_M*(epsilon_0/(epsilon_S*N_S+epsilon_M*N_M+epsilon_L*N_L))*P0*(1-exp(-t*(epsilon_S*N_S+epsilon_M*N_M+epsilon_L*N_L))))
+  prev_L = 1- exp(-sigma_L*(epsilon_0/(epsilon_S*N_S+epsilon_M*N_M+epsilon_L*N_L))*P0*(1-exp(-t*(epsilon_S*N_S+epsilon_M*N_M+epsilon_L*N_L))))
+  NLL_S = -(dbinom(x=I_S, prob = prev_S, size = D_S, log = T))
+  NLL_M = -(dbinom(x=I_M, prob = prev_M, size = D_M, log = T))
+  NLL_L = -(dbinom(x=I_L, prob = prev_L, size = D_L, log = T))
+  NLL_S + NLL_M + NLL_L
+
+  }
+
+NLL_rep(t=1, sigma_0 = .2, epsilon_0 = 1, P0 = 144, N_S = 6, N_M = 6, N_L = 6, D_S = 6, D_M = 6, D_L = 6, I_S = 1, I_M = 2, I_L = 3)
+```
+
+#NLL for the entire experiment, and bringing the data in
+```{r}
+NLL_experiment = function(t=1, sigma_0, epsilon_0, df = dataset, control_df = controls, vol=15) {
+  NLLs = mapply(NLL_rep, P0 = df[,"P_Level"]*18/vol, N_S = df[,"Start_Small"]/vol, N_M = df[,"Start_Med"]/vol, N_L = df[,"Start_Large"]/vol,D_S = df[,"D_Small"], D_M = df[,"D_Med"], D_L = df[,"D_Large"], I_S = df[,"Infec_Small"],I_M = df[,"Infec_Med"], I_L = df[,"Infec_Large"],
+                MoreArgs = list(t=t, sigma_0 = sigma_0, epsilon_0 = epsilon_0))
+  
+  # sigma for medium snails that were used in the control trials
+  sigma_control = sigma_0
+  control_NLLs = -sum(dbinom(x = control_df[,"Infected"], prob = 1 - exp(-sigma_control*control_df[,"P_Level"]), size=1, log=T))
+  #NLLs
+  if(any(!is.finite(NLLs) | !is.finite(control_NLLs))){return(NA)}else{sum(c(NLLs, control_NLLs))}
+}
+
+NLL_experiment(t=1, sigma_0 = 0.2, epsilon_0 = 1, df = dataset, control_df = controls)
+```
+
+#Model Fitting (MLES)
+```{r}
+m_null = mle2(minuslogl = NLL_experiment, start = list(epsilon_0 = 1, sigma_0 = 0.3))
+
+m_null
+
+# Profiling doesn't work because the parameters are negatively correlated, but this can be addressed w/ "control snail" data
+#p_null = profile(m_null)
+#plot(p_null)
+#log(coef(m_null))
+
+```
+
+```{r}
+controls = read.csv("C:/RData/Becky_controls.csv")
+head(controls)
+m_controls_null = mle2(Infected ~ dbinom(prob = 1 - exp(-sigma*P_Level), size=1), start = list(sigma = 0.2), data=controls)
+m_controls_null
+
+m_controls_batch = mle2(Infected ~ dbinom(prob = 1 - exp(-sigma*P_Level), size=1), start = list(sigma = 0.2),
+                        parameters = list(sigma ~ Batch-1), data=controls)
+m_controls_batch
+
+AICctab(m_controls_null, m_controls_batch, delta=T, weights=T, sort=T, nobs=206)
+
+p_batch = profile(m_controls_batch)
+plot(p_batch)
+```
+
